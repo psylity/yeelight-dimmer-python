@@ -5,6 +5,13 @@
 With this code you can handle dimmer changes in your python code. 
 Just override `YeelightDimmer` class and implement your own handlers (check out the `demo.py` code)
 
+Run the following to find out your dimmer MAC:
+```
+# hcitool lescan
+LE Scan ...
+F8:24:41:C5:A0:BE yee-rc
+```
+
 ## Demo
 
 Retrieving beacon_key
