@@ -75,7 +75,7 @@ def main():
     else:
         beacon_key = None
 
-    dimmer = MyYeelightDimmer('F8:24:41:C5:EE:A2', beacon_key)
+    dimmer = MyYeelightDimmer(mac, beacon_key)
 
     if beacon_key is None:
         print("! Press the \"Pair\" button at the dimmer...")
