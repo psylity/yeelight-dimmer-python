@@ -5,9 +5,9 @@ import random
 import time
 
 class XiaomiEncryption(object):
-    # RC4
+
     @staticmethod
-    def _cipherInit(key) -> bytes:
+    def _cipherInit(key):
         perm = bytearray()
         for i in range(0, 256):
             perm.extend(bytes([i & 0xff]))
@@ -20,15 +20,15 @@ class XiaomiEncryption(object):
         return perm
 
     @staticmethod
-    def mixA(mac, productID) -> bytes:
+    def mixA(mac, productID):
         return bytes([mac[0], mac[2], mac[5], (productID & 0xff), (productID & 0xff), mac[4], mac[5], mac[1]])
 
     @staticmethod
-    def mixB(mac, productID) -> bytes:
+    def mixB(mac, productID):
         return bytes([mac[0], mac[2], mac[5], ((productID >> 8) & 0xff), mac[4], mac[0], mac[5], (productID & 0xff)])
 
     @staticmethod
-    def _cipherCrypt(input, perm) -> bytes:
+    def _cipherCrypt(input, perm):
         index1 = 0
         index2 = 0
         output = bytearray()
@@ -46,7 +46,7 @@ class XiaomiEncryption(object):
         return output
 
     @staticmethod
-    def cipher(key, input) -> bytes:
+    def cipher(key, input):
         perm = XiaomiEncryption._cipherInit(key)
         return XiaomiEncryption._cipherCrypt(input, perm)
 
@@ -54,36 +54,29 @@ class XiaomiEncryption(object):
     # AES
     @staticmethod
     def decryptMiBeaconV2(key, data):
+        # prepare aes key (12b -> 16b)
         key_1 = key[0:6]
         key_2 = bytes.fromhex("8d3d3c97")
         key_3 = key[6:]
         key = b"".join([key_1, key_2, key_3])
 
-        # xiaomi_index = data.find(b'\x16\x95\xFE')
-        xiaomi_index = -1
+        # extract packet fields
+        xiaomi_mac_reversed = data[7:13]
+        framectrl_data = data[2:4]
+        device_type = data[4:6]
+        encrypted_payload = data[13:]
 
-        xiaomi_mac_reversed = data[xiaomi_index + 8:xiaomi_index + 14]
-
-        framectrl_data = data[xiaomi_index + 3:xiaomi_index + 5]
-
-        device_type = data[xiaomi_index + 5:xiaomi_index + 7]
-
-        encrypted_payload = data[xiaomi_index + 14:]
-
-        packet_id = data[xiaomi_index + 7:xiaomi_index + 8]
+        packet_id = data[6:7]
         payload_counter = b"".join([packet_id,  encrypted_payload[-4:-1]])
 
+        # prepare nonce
         nonce = b"".join([framectrl_data, device_type, payload_counter, xiaomi_mac_reversed[:-1]])
-
-        token = encrypted_payload[-1:]
 
         cipherpayload = encrypted_payload[:-4]
 
+        # AES decrypt
         cipher = AES.new(key, AES.MODE_CCM, nonce=nonce, mac_len=4)
-
-        aad = b"\x11"
-        cipher.update(aad)
-
+        cipher.update(b"\x11")
         return cipher.decrypt(cipherpayload)
 
 
@@ -115,33 +108,28 @@ class YeelightDimmer(object):
             self.beacon_key = bytes.fromhex(beacon_key)
 
         self.prev_packet_id = None
+        self.auth_can_pass = False
 
     def auth(self):
         self.auth_can_pass = False
 
-        print("Connecting...", end='', flush=True)
+        self.onConnectionStart()
         if not self._connect():
-            print(" failed")
+            self.onConnectionFail()
             return
-        print(" done")
+        self.onConnectionDone()
 
-        print("Authenticating.", end='', flush=True)
+        self.onAuthStart()
         descriptors = self.service.getDescriptors()
-
         self.peripheral.writeCharacteristic(self.HANDLE_AUTH_INIT, self.XIAOMI_KEY1, True)
         descriptors[1].write(self.SUBSCRIBE_TRUE, True)
 
         self.peripheral.writeCharacteristic(self.HANDLE_AUTH, XiaomiEncryption.cipher(XiaomiEncryption.mixA(self.reversed_mac, self.PRODUCT_ID), self.token), "true")
 
-        for i in range(10):
-            print(".", end='', flush=True)
-            if self.peripheral.waitForNotifications(1.0):
-                if self.auth_can_pass:
-                    break
-            continue
+        self.peripheral.waitForNotifications(10.0) # 10 sec auth timeout
 
-        if not self.auth_can_pass:
-            print(" failed")
+        if not self.auth_can_pass: # this flag should be changed in handleNotification
+            self.onAuthFail()
             return
 
         self.peripheral.writeCharacteristic(self.HANDLE_AUTH, XiaomiEncryption.cipher(self.token, self.XIAOMI_KEY2), True)
@@ -149,10 +137,9 @@ class YeelightDimmer(object):
         # have to read firmware version to complete auth
         self.firmware_version = XiaomiEncryption.cipher(self.token, self.peripheral.readCharacteristic(self.HANDLE_READ_FIRMWARE_VERSION)).decode()
 
-        print(" done")
         self.beacon_key = bytes(XiaomiEncryption.cipher(self.token, self.peripheral.readCharacteristic(self.HANDLE_BEACON_KEY)))
+        self.onAuthDone(self.beacon_key)
         return True
-
 
     def subscribe(self):
         self.scanner_run = True
@@ -160,14 +147,13 @@ class YeelightDimmer(object):
         self.scanner = scanner
         scanner.start()
 
-        while self.scanner_run: # ?
-            scanner.process(1)
-        self.scanner.stop()
+        while self.scanner_run: # main loop
+            scanner.process(1) # 1 seconds timeout
 
+        scanner.stop()
 
     def unsubscribe(self):
         self.scanner_run = False
-
 
     def _connect(self):
         try:
@@ -180,11 +166,12 @@ class YeelightDimmer(object):
 
     def handleNotification(self, cHandle, data):
         if cHandle == self.HANDLE_AUTH:
-            if(XiaomiEncryption.cipher(XiaomiEncryption.mixB(self.reversed_mac, self.PRODUCT_ID),
-                               XiaomiEncryption.cipher(XiaomiEncryption.mixA(self.reversed_mac,
-                                                             self.PRODUCT_ID),
-                                               data)) != self.token):
-                raise Exception("Authentication failed.")
+            decrypted_token = XiaomiEncryption.cipher(XiaomiEncryption.mixB(self.reversed_mac, self.PRODUCT_ID),
+                               XiaomiEncryption.cipher(XiaomiEncryption.mixA(self.reversed_mac, self.PRODUCT_ID), data))
+
+            if (decrypted_token != self.token):
+                return # raise Exception("Authentication failed.")
+
             self.auth_can_pass = True
 
     def handleDiscovery(self, dev, isNewDev, isNewData):
@@ -215,24 +202,24 @@ class YeelightDimmer(object):
             # ff = value2
             # 04 = state
 
-            u = struct.unpack(">HBbbB", decrypted[0:6])
+            fields = struct.unpack(">HBbbB", decrypted[0:6])
 
-            if u[0] != 0x0110: # unknown packet, skip
+            if fields[0] != 0x0110: # unknown packet, skip
                 continue
 
-            if u[1] != 3:
+            if fields[1] != 3:
                 # never seen such packet, dont know how to handle
                 continue
 
-            self.onDataPacket(u[2], u[3], u[4])
+            self.onDataPacket(fields[2], fields[3], fields[4], decrypted)
 
-    def onDataPacket(self, value1, value2, button_state):
+    def onDataPacket(self, value1, value2, button_state, raw):
         if button_state == 4:
             if value1 == 0:
-                return self.handleRotation(value2, False)
+                return self.onRotate(value2, False)
 
             if value2 == 0:
-                return self.handleRotation(value1, True)
+                return self.onRotate(value1, True)
 
             if value1 != 0 and value2 != 0:
                 # both rotated with button pressed and not.
@@ -241,31 +228,45 @@ class YeelightDimmer(object):
                 return
 
         if button_state == 3:
-
             if value1 == 0:
                 if value2 == 1:
-                    return self.handleClick()
+                    return self.onClick()
                 else:
-                    return self.handleMultipleClicks(value2)
+                    return self.onMultipleClicks(value2)
 
             if value1 == 1:
-                return self.handleLongPress(value2)
+                return self.onLongPress(value2)
 
-        print("unhandled event: ", value1, value2, button_state)
+        raise Exception("Unhandled dimmer packet: 0x%s" % raw.hex())
 
+    # methods to override
+    def onConnectionStart(self):
+        pass
 
-    def handleRotation(self, offset, button_down):
-        # print("rotation offset %i" % offset)
-        raise NotImplementedError()
+    def onConnectionDone(self):
+        pass
 
-    def handleClick(self):
-        # print("click")
-        raise NotImplementedError()
+    def onConnectionFail(self):
+        pass
 
-    def handleMultipleClicks(self, count):
-        # print("multiclick %i" % count)
-        raise NotImplementedError()
+    def onAuthStart(self):
+        pass
 
-    def handleLongPress(self, duration):
-        # print("long press for %i seconds" % duration)
-        raise NotImplementedError()
+    def onAuthDone(self, beacon_key):
+        pass
+
+    def onAuthFail(self):
+        pass
+
+    # dimmer events
+    def onRotate(self, offset, button_down):
+        pass
+
+    def onClick(self):
+        pass
+
+    def onMultipleClicks(self, count):
+        pass
+
+    def onLongPress(self, duration):
+        pass
