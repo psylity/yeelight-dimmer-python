@@ -11,6 +11,8 @@ Run the following to find out your dimmer MAC:
 LE Scan ...
 F8:24:41:C5:A0:BE yee-rc
 ```
+If you want to use Yeelight dimmers in your ESP32 project - check out [this repository](https://github.com/psylity/yeelight-dimmer-esp32)
+
 
 ## Demo
 
