@@ -14,6 +14,12 @@ F8:24:41:C5:A0:BE yee-rc
 If you want to use Yeelight dimmers in your ESP32 project - check out [this repository](https://github.com/psylity/yeelight-dimmer-esp32)
 
 
+## Preparations
+To install the required Python dependencies, run the following command:
+```
+python3 -m pip install -r requirements.txt
+```
+
 ## Demo
 
 Retrieving beacon_key
